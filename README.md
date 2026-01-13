@@ -1,6 +1,6 @@
 # Gemini_proxy_claudecode
 
-> Use Google Gemini models with Claude Code - A proxy that translates Anthropic API calls to Google Gemini API format.
+> Use Google Gemini models with Claude Code via **Google OAuth** - No API key required!
 
 ```
    ____                _       _
@@ -13,13 +13,13 @@
 
 ## What is this?
 
-This proxy lets you use **Google Gemini models** (Gemini 2.0, 1.5 Pro, 1.5 Flash, etc.) with **Claude Code CLI**. It translates Anthropic's Messages API format to Google's Generative AI API.
+This proxy lets you use **Google Gemini models** with **Claude Code CLI** using your **Google account login** (OAuth). No API key needed - just login with your Google account!
 
-Perfect for:
-- Comparing Claude vs Gemini responses
-- Using Gemini's large context window (1M+ tokens)
-- Experimenting with Gemini's multimodal capabilities
-- Having fun with AI tooling
+Similar to how CLIProxyAPI works for ChatGPT/Codex, this proxy:
+- Opens a browser for Google OAuth login
+- Stores tokens securely in `~/.gemini-proxy/`
+- Auto-refreshes tokens when they expire
+- Translates Anthropic API format to Gemini
 
 ## Quick Start
 
@@ -36,37 +36,24 @@ uv sync
 pip install -r requirements.txt
 ```
 
-### 2. Set your Google API Key
-
-Get your API key from [Google AI Studio](https://aistudio.google.com/apikey)
-
-```bash
-export GOOGLE_API_KEY="your-api-key-here"
-# or
-export GEMINI_API_KEY="your-api-key-here"
-```
-
-Or create a `.env` file:
-```
-GOOGLE_API_KEY=your-api-key-here
-```
-
-### 3. Start the Proxy
+### 2. Start the Proxy (Will prompt for login)
 
 ```bash
 # Using uv
 uv run uvicorn server:app --host 0.0.0.0 --port 8081 --reload
-
-# Or directly
-uvicorn server:app --host 0.0.0.0 --port 8081 --reload
 ```
 
-### 4. Run Claude Code with the Proxy
+On first run, it will:
+1. Open your browser to Google's login page
+2. Ask you to authorize the app
+3. Store your tokens locally
+
+### 3. Run Claude Code with Gemini
 
 ```bash
 ANTHROPIC_BASE_URL="http://localhost:8081" \
 ANTHROPIC_AUTH_TOKEN="test" \
-ANTHROPIC_MODEL="gemini-1.5-pro" \
+ANTHROPIC_MODEL="gemini-2.0-flash" \
 claude --dangerously-skip-permissions
 ```
 
@@ -75,10 +62,17 @@ claude --dangerously-skip-permissions
 Add these to your `~/.zshrc` or `~/.bashrc`:
 
 ```bash
-# Start the proxy
-alias start-gemini-proxy='cd ~/path/to/Gemini_proxy_claudecode && uv run uvicorn server:app --host 0.0.0.0 --port 8081 --reload'
+# Start Gemini proxy (will prompt for OAuth login if needed)
+alias start-gemini-proxy='cd ~/Documents/Coding/github/Gemini_proxy_claudecode && uv run uvicorn server:app --host 0.0.0.0 --port 8081 --reload'
+alias stop-gemini-proxy='lsof -ti:8081 | xargs kill -9 2>/dev/null && echo "Gemini proxy stopped" || echo "No proxy running"'
 
-# Claude Code with Gemini 2.0 Flash
+# Re-login to Gemini (if token expires or you want to switch accounts)
+alias gemini-login='cd ~/Documents/Coding/github/Gemini_proxy_claudecode && uv run python server.py --login'
+
+# Check Gemini proxy status
+alias gemini-status='curl -s http://localhost:8081/health 2>/dev/null | python3 -m json.tool || echo "Proxy not running"'
+
+# Claude Code with Gemini
 alias claude-gemini='ANTHROPIC_BASE_URL="http://localhost:8081" \
   ANTHROPIC_AUTH_TOKEN="test" \
   ANTHROPIC_MODEL="gemini-2.0-flash" \
@@ -86,18 +80,6 @@ alias claude-gemini='ANTHROPIC_BASE_URL="http://localhost:8081" \
   ANTHROPIC_DEFAULT_SONNET_MODEL="gemini-2.0-flash" \
   ANTHROPIC_DEFAULT_HAIKU_MODEL="gemini-1.5-flash" \
   CLAUDE_CODE_SUBAGENT_MODEL="gemini-2.0-flash" \
-  claude --dangerously-skip-permissions'
-
-# Claude Code with Gemini 1.5 Pro (large context)
-alias claude-gemini-pro='ANTHROPIC_BASE_URL="http://localhost:8081" \
-  ANTHROPIC_AUTH_TOKEN="test" \
-  ANTHROPIC_MODEL="gemini-1.5-pro" \
-  claude --dangerously-skip-permissions'
-
-# Claude Code with Gemini 2.0 Flash Thinking (experimental reasoning)
-alias claude-gemini-thinking='ANTHROPIC_BASE_URL="http://localhost:8081" \
-  ANTHROPIC_AUTH_TOKEN="test" \
-  ANTHROPIC_MODEL="gemini-2.0-flash-thinking-exp" \
   claude --dangerously-skip-permissions'
 ```
 
@@ -119,111 +101,102 @@ source ~/.zshrc
 | `gemini-1.5-flash-latest` | Latest Gemini 1.5 Flash | 1M tokens |
 | `gemini-exp-1206` | Experimental model | 1M tokens |
 
-## Multi-Proxy Setup
-
-Want to switch between Claude, Gemini, AND OpenAI? Here's the full setup:
-
-```bash
-# Native Claude (paid subscription)
-alias claude-native='unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL && claude --dangerously-skip-permissions'
-
-# Gemini via Gemini_proxy_claudecode (port 8081)
-alias claude-gemini='ANTHROPIC_BASE_URL="http://localhost:8081" ANTHROPIC_AUTH_TOKEN="test" ANTHROPIC_MODEL="gemini-2.0-flash" claude --dangerously-skip-permissions'
-
-# OpenAI via GPT_proxy_claudecode (port 8082)
-alias claude-gpt='ANTHROPIC_BASE_URL="http://localhost:8082" ANTHROPIC_AUTH_TOKEN="test" ANTHROPIC_MODEL="gpt-4.1" claude --dangerously-skip-permissions'
-
-# Start proxies
-alias start-gemini-proxy='cd ~/path/to/Gemini_proxy_claudecode && uv run uvicorn server:app --port 8081 --reload'
-alias start-gpt-proxy='cd ~/path/to/GPT_proxy_claudecode && uv run uvicorn server:app --port 8082 --reload'
-```
-
-## How It Works
+## How OAuth Works
 
 ```
-┌─────────────────┐     ┌──────────────────────────┐     ┌─────────────────┐
-│   Claude Code   │────▶│  Gemini_proxy_claudecode │────▶│   Gemini API    │
-│      CLI        │◀────│        (Proxy)           │◀────│                 │
-└─────────────────┘     └──────────────────────────┘     └─────────────────┘
-                              │
-                              ▼
-                    Translates Anthropic
-                    Messages API format
-                    to Gemini API
+┌──────────────┐    ┌─────────────────┐    ┌──────────────────┐
+│  First Run   │───▶│ Google OAuth    │───▶│  Token Storage   │
+│              │    │ (Browser Login) │    │ ~/.gemini-proxy/ │
+└──────────────┘    └─────────────────┘    └──────────────────┘
+                                                    │
+                                                    ▼
+┌──────────────┐    ┌─────────────────┐    ┌──────────────────┐
+│ Claude Code  │───▶│ Gemini Proxy    │───▶│   Gemini API     │
+│              │◀───│ (Auto-refresh)  │◀───│ (OAuth Bearer)   │
+└──────────────┘    └─────────────────┘    └──────────────────┘
 ```
 
-The proxy:
-1. Receives Anthropic-formatted requests from Claude Code
-2. Transforms them to Google Generative AI format
-3. Sends to Gemini API
-4. Converts the response back to Anthropic format
-5. Returns to Claude Code
+1. **First run**: Opens browser for Google login, stores refresh token
+2. **Subsequent runs**: Uses stored token, auto-refreshes when expired
+3. **Token storage**: `~/.gemini-proxy/google-oauth.json` (permission 600)
 
 ## API Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
 | `POST /v1/messages` | Main messages endpoint (Anthropic format) |
+| `POST /login` | Trigger OAuth login flow |
+| `POST /logout` | Clear stored tokens |
 | `GET /v1/models` | List available models |
-| `GET /health` | Health check |
+| `GET /health` | Health check (shows login status) |
 
-## Configuration
+## Commands
 
-Environment variables:
+```bash
+# Start proxy (auto-login on first run)
+start-gemini-proxy
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GOOGLE_API_KEY` | Your Google AI API key | Required |
-| `GEMINI_API_KEY` | Alternative env name | - |
-| `PORT` | Proxy server port | 8081 |
-| `LOG_LEVEL` | Logging verbosity | INFO |
+# Check status and logged-in account
+gemini-status
+
+# Re-login or switch accounts
+gemini-login
+
+# Stop proxy
+stop-gemini-proxy
+
+# Use with Claude Code
+claude-yolo1  # If using the alias setup
+```
+
+## Multi-Proxy Setup
+
+Use Claude, Gemini, AND OpenAI:
+
+```bash
+# Native Claude (paid subscription)
+alias claude-yolo='unset ANTHROPIC_BASE_URL ... && claude --dangerously-skip-permissions'
+
+# Gemini via OAuth proxy (port 8081)
+alias claude-yolo1='ANTHROPIC_BASE_URL="http://localhost:8081" ... claude --dangerously-skip-permissions'
+
+# OpenAI/Codex via CLIProxyAPI (port 8317)
+alias claude-yolo2='ANTHROPIC_BASE_URL="http://localhost:8317" ... claude --dangerously-skip-permissions'
+```
 
 ## Troubleshooting
+
+### "Not authenticated"
+Run `gemini-login` or restart the proxy to trigger OAuth flow.
+
+### "Token refresh failed"
+Your refresh token may have expired. Run `gemini-login` to re-authenticate.
 
 ### "Connection refused"
 Make sure the proxy is running:
 ```bash
+gemini-status
+# or
 curl http://localhost:8081/health
 ```
 
-### "Invalid API Key"
-Check your Google API key is set:
+### Switch Google accounts
 ```bash
-echo $GOOGLE_API_KEY
+# Logout and re-login
+curl -X POST http://localhost:8081/logout
+gemini-login
 ```
 
-Get a key from [Google AI Studio](https://aistudio.google.com/apikey)
+## Security
 
-### Model not found
-Verify you're using a supported model ID (see table above).
-
-### Rate limits
-Google AI API has generous free tier limits. Check [pricing](https://ai.google.dev/pricing).
-
-## Important Notes
-
-- This uses the **Google AI API** (generativelanguage.googleapis.com)
-- Free tier includes 15 RPM for Gemini 1.5 Pro, 60 RPM for Flash models
-- Paid tier available for higher limits
-- Get your API key at [Google AI Studio](https://aistudio.google.com/apikey)
-
-## Features
-
-- Full streaming support
-- Tool/function calling support
-- Multimodal (images) support
-- System instructions support
-- Temperature, top_p, top_k parameters
+- Tokens stored in `~/.gemini-proxy/` with 600 permissions
+- Refresh tokens allow long-term access without re-login
+- Uses Google's standard OAuth 2.0 device flow
+- No API keys stored or transmitted
 
 ## Contributing
 
 PRs welcome! This is a fun open-source project.
-
-1. Fork the repo
-2. Create your feature branch (`git checkout -b feature/cool-thing`)
-3. Commit changes (`git commit -am 'Add cool thing'`)
-4. Push (`git push origin feature/cool-thing`)
-5. Open a PR
 
 ## License
 
@@ -235,4 +208,4 @@ MIT - Do whatever you want with it!
 
 ---
 
-Made with and lots of API calls
+Made with and Google OAuth magic

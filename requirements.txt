@@ -1,7 +1,7 @@
-# Gemini_proxy_claudecode - Dependencies
+# Gemini_proxy_claudecode - Dependencies (OAuth version)
 # Install with: pip install -r requirements.txt
 
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-google-generativeai>=0.8.0
+httpx>=0.25.0
 python-dotenv>=1.0.0

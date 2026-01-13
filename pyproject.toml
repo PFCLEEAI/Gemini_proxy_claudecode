@@ -1,14 +1,14 @@
 [project]
 name = "Gemini_proxy_claudecode"
 version = "1.0.0"
-description = "Google Gemini to Anthropic API Proxy - Use Gemini models with Claude Code"
+description = "Google Gemini to Anthropic API Proxy (OAuth) - Use Gemini models with Claude Code"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 authors = [
     { name = "Gemini_proxy_claudecode Contributors" }
 ]
-keywords = ["gemini", "google", "anthropic", "claude", "proxy", "api"]
+keywords = ["gemini", "google", "anthropic", "claude", "proxy", "api", "oauth"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
-    "google-generativeai>=0.8.0",
+    "httpx>=0.25.0",
     "python-dotenv>=1.0.0",
 ]
 

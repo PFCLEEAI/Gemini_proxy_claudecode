@@ -64,23 +64,35 @@ SCOPES = [
 
 # Supported models - maps display names to actual Gemini API model names
 MODEL_MAPPING = {
-    # Friendly aliases (for Claude Code display)
-    "Gemini-2-Flash": "gemini-2.0-flash-exp",
-    "Gemini-2-Pro": "gemini-1.5-pro-latest",
-    "Gemini-2-Flash-Lite": "gemini-1.5-flash-latest",
-    "Gemini-2-Thinking": "gemini-2.0-flash-thinking-exp",
-    # Standard names
+    # ===== Gemini 3 (Latest - Dec 2025) =====
+    "Gemini-3-Flash": "gemini-3-flash-preview",
+    "Gemini-3-Pro": "gemini-3-pro-preview",
+    "gemini-3-flash": "gemini-3-flash-preview",
+    "gemini-3-pro": "gemini-3-pro-preview",
+    "gemini-3-flash-preview": "gemini-3-flash-preview",
+    "gemini-3-pro-preview": "gemini-3-pro-preview",
+
+    # ===== Gemini 2.5 =====
+    "Gemini-2.5-Flash": "gemini-2.5-flash",
+    "Gemini-2.5-Pro": "gemini-2.5-pro",
+    "Gemini-2.5-Flash-Lite": "gemini-2.5-flash-lite",
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "gemini-2.5-pro": "gemini-2.5-pro",
+    "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+
+    # ===== Gemini 2.0 =====
+    "Gemini-2-Flash": "gemini-2.0-flash",
+    "Gemini-2-Flash-Lite": "gemini-2.0-flash-lite",
+    "gemini-2.0-flash": "gemini-2.0-flash",
     "gemini-2.0-flash-exp": "gemini-2.0-flash-exp",
-    "gemini-2.0-flash": "gemini-2.0-flash-exp",
+    "gemini-2.0-flash-lite": "gemini-2.0-flash-lite",
+
+    # ===== Gemini 1.5 (Legacy) =====
     "gemini-1.5-pro": "gemini-1.5-pro",
     "gemini-1.5-pro-latest": "gemini-1.5-pro-latest",
     "gemini-1.5-flash": "gemini-1.5-flash",
     "gemini-1.5-flash-latest": "gemini-1.5-flash-latest",
-    "gemini-1.0-pro": "gemini-1.0-pro",
     "gemini-pro": "gemini-1.5-pro",
-    "gemini-exp-1206": "gemini-exp-1206",
-    "gemini-2.0-flash-thinking-exp": "gemini-2.0-flash-thinking-exp",
-    "gemini-2.0-flash-thinking-exp-1219": "gemini-2.0-flash-thinking-exp-1219",
 }
 
 

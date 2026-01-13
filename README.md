@@ -26,7 +26,7 @@ Perfect for:
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/Gemini_proxy_claudecode.git
+git clone https://github.com/PFCLEEAI/Gemini_proxy_claudecode.git
 cd Gemini_proxy_claudecode
 
 # Using uv (recommended)

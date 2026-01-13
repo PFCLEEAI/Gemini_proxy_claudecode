@@ -39,13 +39,12 @@ app = FastAPI(
 TOKEN_DIR = Path.home() / ".gemini-proxy"
 TOKEN_FILE = TOKEN_DIR / "google-oauth.json"
 
-# Google OAuth Configuration
-# Using Google's public OAuth client for CLI apps (similar to gcloud)
-GOOGLE_CLIENT_ID = os.getenv(
-    "GOOGLE_CLIENT_ID",
-    "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com"
-)
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "d-FL95Q19q7MQmFpd7hHD0Ty")
+# API Key mode (simpler, recommended for personal use)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+# Google OAuth Configuration (for OAuth mode)
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
 # OAuth endpoints
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -432,25 +431,41 @@ async def stream_gemini_response(response: httpx.Response, model: str) -> AsyncG
 @app.on_event("startup")
 async def startup_event():
     """Check authentication on startup."""
-    if not oauth_manager.is_authenticated():
-        print("\n⚠️  Not logged in to Google. Starting OAuth flow...")
-        await oauth_manager.device_flow_login()
-    elif oauth_manager.is_expired():
-        print("\n🔄 Token expired, refreshing...")
-        success = await oauth_manager.refresh_token()
-        if not success:
-            print("⚠️  Refresh failed. Starting OAuth flow...")
+    if GOOGLE_API_KEY:
+        print(f"\n✅ Using API Key mode (GOOGLE_API_KEY set)")
+        print(f"   Key: {GOOGLE_API_KEY[:10]}...{GOOGLE_API_KEY[-4:]}")
+    elif GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+        if not oauth_manager.is_authenticated():
+            print("\n⚠️  Not logged in to Google. Starting OAuth flow...")
             await oauth_manager.device_flow_login()
+        elif oauth_manager.is_expired():
+            print("\n🔄 Token expired, refreshing...")
+            success = await oauth_manager.refresh_token()
+            if not success:
+                print("⚠️  Refresh failed. Starting OAuth flow...")
+                await oauth_manager.device_flow_login()
+        else:
+            print(f"\n✅ Logged in as: {oauth_manager.token_data.get('email', 'unknown')}")
     else:
-        print(f"\n✅ Logged in as: {oauth_manager.token_data.get('email', 'unknown')}")
+        print("\n⚠️  No authentication configured!")
+        print("   Set GOOGLE_API_KEY for API key mode")
+        print("   Or set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET for OAuth")
 
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    if GOOGLE_API_KEY:
+        return {
+            "status": "healthy",
+            "service": "gemini-proxy-claudecode",
+            "auth_mode": "api_key",
+            "authenticated": True
+        }
     return {
         "status": "healthy",
         "service": "gemini-proxy-claudecode",
+        "auth_mode": "oauth",
         "authenticated": oauth_manager.is_authenticated(),
         "email": oauth_manager.token_data.get("email") if oauth_manager.token_data else None
     }
@@ -487,13 +502,19 @@ async def logout():
 async def messages(request: Request):
     """Main messages endpoint - translates Anthropic Messages API to Gemini."""
 
-    # Check authentication
-    access_token = await oauth_manager.get_access_token()
-    if not access_token:
-        raise HTTPException(
-            status_code=401,
-            detail="Not authenticated. Run 'gemini-login' or restart the proxy to login."
-        )
+    # Check authentication - API key or OAuth
+    if GOOGLE_API_KEY:
+        auth_mode = "api_key"
+        auth_value = GOOGLE_API_KEY
+    else:
+        access_token = await oauth_manager.get_access_token()
+        if not access_token:
+            raise HTTPException(
+                status_code=401,
+                detail="Not authenticated. Set GOOGLE_API_KEY or configure OAuth."
+            )
+        auth_mode = "oauth"
+        auth_value = access_token
 
     try:
         body = await request.json()
@@ -512,13 +533,20 @@ async def messages(request: Request):
     stream = body.get("stream", False)
     action = "streamGenerateContent" if stream else "generateContent"
     url = f"{GEMINI_API_BASE}/models/{gemini_model}:{action}"
-    if stream:
-        url += "?alt=sse"
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-    }
+    # Add auth to URL or headers based on mode
+    if auth_mode == "api_key":
+        url += f"?key={auth_value}"
+        if stream:
+            url += "&alt=sse"
+        headers = {"Content-Type": "application/json"}
+    else:
+        if stream:
+            url += "?alt=sse"
+        headers = {
+            "Authorization": f"Bearer {auth_value}",
+            "Content-Type": "application/json",
+        }
 
     async with httpx.AsyncClient(timeout=300.0) as client:
         if stream:

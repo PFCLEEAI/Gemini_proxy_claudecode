@@ -62,10 +62,16 @@ SCOPES = [
     "https://www.googleapis.com/auth/cloud-platform",
 ]
 
-# Supported models
+# Supported models - maps display names to actual Gemini API model names
 MODEL_MAPPING = {
+    # Friendly aliases (for Claude Code display)
+    "Gemini-2-Flash": "gemini-2.0-flash-exp",
+    "Gemini-2-Pro": "gemini-1.5-pro-latest",
+    "Gemini-2-Flash-Lite": "gemini-1.5-flash-latest",
+    "Gemini-2-Thinking": "gemini-2.0-flash-thinking-exp",
+    # Standard names
     "gemini-2.0-flash-exp": "gemini-2.0-flash-exp",
-    "gemini-2.0-flash": "gemini-2.0-flash",
+    "gemini-2.0-flash": "gemini-2.0-flash-exp",
     "gemini-1.5-pro": "gemini-1.5-pro",
     "gemini-1.5-pro-latest": "gemini-1.5-pro-latest",
     "gemini-1.5-flash": "gemini-1.5-flash",

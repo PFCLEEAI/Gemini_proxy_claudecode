@@ -1,18 +1,19 @@
 """
-Gemini_proxy_claudecode - Google Gemini to Anthropic API Proxy (OAuth)
+Gemini_proxy_claudecode - Google Gemini to Anthropic API Proxy
 
-Translates Anthropic Messages API requests to Google Gemini API format,
-using Google OAuth for authentication - just like CLIProxyAPI for ChatGPT.
+Translates Anthropic Messages API requests to Google Gemini API format.
+Uses Google Application Default Credentials (ADC) - just run:
+  gcloud auth application-default login
+
+Or set GOOGLE_API_KEY environment variable for API key auth.
 """
 
 import os
 import sys
 import json
 import logging
-import webbrowser
+import subprocess
 import secrets
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlencode, parse_qs, urlparse
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, AsyncGenerator
@@ -33,33 +34,15 @@ logger = logging.getLogger("gemini-proxy")
 
 app = FastAPI(
     title="Gemini_proxy_claudecode",
-    description="Google Gemini to Anthropic API Proxy (OAuth)",
+    description="Google Gemini to Anthropic API Proxy",
     version="1.0.0"
 )
-
-# Storage
-TOKEN_DIR = Path.home() / ".gemini-proxy"
-TOKEN_FILE = TOKEN_DIR / "google-oauth.json"
-CONFIG_FILE = TOKEN_DIR / "config.json"
-
-# OAuth Configuration
-OAUTH_CALLBACK_PORT = 8089
-OAUTH_REDIRECT_URI = f"http://localhost:{OAUTH_CALLBACK_PORT}/callback"
-
-# Google OAuth endpoints
-GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 # Gemini API
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
-# Scopes for Gemini
-SCOPES = [
-    "https://www.googleapis.com/auth/generative-language.retriever",
-    "https://www.googleapis.com/auth/cloud-platform",
-    "openid", "email", "profile",
-]
+# ADC credentials file location
+ADC_FILE = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
 
 # Model mapping
 MODEL_MAPPING = {
@@ -79,220 +62,128 @@ MODEL_MAPPING = {
 }
 
 
-class OAuthCallback(BaseHTTPRequestHandler):
-    """Handles OAuth callback."""
-    auth_code = None
-    error = None
-
-    def do_GET(self):
-        params = parse_qs(urlparse(self.path).query)
-        if "code" in params:
-            OAuthCallback.auth_code = params["code"][0]
-            self.send_response(200)
-            self.send_header("Content-type", "text/html")
-            self.end_headers()
-            self.wfile.write(b"""
-                <html><body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;background:linear-gradient(135deg,#4285f4,#34a853);">
-                <div style="background:white;padding:40px;border-radius:16px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.2);">
-                <h1 style="color:#22c55e;">Login Successful!</h1>
-                <p>You can close this window.</p>
-                </div></body></html>
-            """)
-        elif "error" in params:
-            OAuthCallback.error = params.get("error_description", ["Login failed"])[0]
-            self.send_response(400)
-            self.send_header("Content-type", "text/html")
-            self.end_headers()
-            self.wfile.write(f"<html><body><h1>Error: {OAuthCallback.error}</h1></body></html>".encode())
-
-    def log_message(self, *args): pass
-
-
 class GeminiAuth:
-    """Manages Google OAuth for Gemini API."""
+    """Manages Google authentication for Gemini API using ADC or API key."""
 
     def __init__(self):
-        self.config = {}
-        self.tokens = None
-        TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-        self._load()
+        self.access_token = None
+        self.token_expiry = None
+        self.email = None
+        self.auth_method = None  # 'adc', 'api_key', or None
+        self._check_auth()
 
-    def _load(self):
-        if CONFIG_FILE.exists():
-            self.config = json.loads(CONFIG_FILE.read_text())
-        if TOKEN_FILE.exists():
-            self.tokens = json.loads(TOKEN_FILE.read_text())
-        # Env vars override
-        if os.getenv("GOOGLE_CLIENT_ID"):
-            self.config["client_id"] = os.getenv("GOOGLE_CLIENT_ID")
-        if os.getenv("GOOGLE_CLIENT_SECRET"):
-            self.config["client_secret"] = os.getenv("GOOGLE_CLIENT_SECRET")
+    def _check_auth(self):
+        """Check available authentication methods."""
+        # Priority 1: API key from environment
+        if os.getenv("GOOGLE_API_KEY"):
+            self.auth_method = "api_key"
+            logger.info("Using GOOGLE_API_KEY for authentication")
+            return
 
-    def _save_config(self):
-        CONFIG_FILE.write_text(json.dumps(self.config, indent=2))
-        os.chmod(CONFIG_FILE, 0o600)
+        # Priority 2: Application Default Credentials
+        if ADC_FILE.exists():
+            try:
+                creds = json.loads(ADC_FILE.read_text())
+                if creds.get("client_id") and creds.get("refresh_token"):
+                    self.auth_method = "adc"
+                    logger.info("Using Application Default Credentials")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to read ADC file: {e}")
 
-    def _save_tokens(self):
-        TOKEN_FILE.write_text(json.dumps(self.tokens, indent=2))
-        os.chmod(TOKEN_FILE, 0o600)
+        self.auth_method = None
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.config.get("client_id") and self.config.get("client_secret"))
+        return self.auth_method is not None
 
     @property
-    def is_logged_in(self) -> bool:
-        return bool(self.tokens and self.tokens.get("access_token"))
-
-    @property
-    def is_expired(self) -> bool:
-        if not self.tokens: return True
-        exp = self.tokens.get("expires_at")
-        if not exp: return True
-        return datetime.fromisoformat(exp) < datetime.now()
-
-    def setup(self) -> bool:
-        """One-time OAuth client setup."""
-        print("\n" + "=" * 60)
-        print("  GEMINI PROXY - ONE-TIME SETUP")
-        print("=" * 60)
-        print("\nYou need to create Google OAuth credentials (one time only):")
-        print("\n1. Go to: https://console.cloud.google.com/apis/credentials")
-        print("2. Create a project (or select existing)")
-        print("3. Click '+ CREATE CREDENTIALS' → 'OAuth client ID'")
-        print("4. Configure consent screen if prompted (External, just your email)")
-        print("5. Select 'Desktop app' as application type")
-        print("6. Copy the Client ID and Client Secret")
-        print("\n" + "-" * 60)
-
-        # Try to open the URL
-        print("\nOpening Google Cloud Console...")
-        webbrowser.open("https://console.cloud.google.com/apis/credentials")
-
-        client_id = input("\nPaste Client ID: ").strip()
-        client_secret = input("Paste Client Secret: ").strip()
-
-        if client_id and client_secret:
-            self.config["client_id"] = client_id
-            self.config["client_secret"] = client_secret
-            self._save_config()
-            print("\n✅ Setup complete! Now logging in...")
-            return True
-        print("\n❌ Setup cancelled")
-        return False
+    def api_key(self) -> Optional[str]:
+        return os.getenv("GOOGLE_API_KEY")
 
     def login(self) -> bool:
-        """OAuth login via browser."""
-        if not self.is_configured:
-            if not self.setup():
-                return False
+        """Trigger gcloud auth application-default login."""
+        print("\n" + "=" * 60)
+        print("  GEMINI PROXY - GOOGLE LOGIN")
+        print("=" * 60)
+        print("\nRunning: gcloud auth application-default login")
+        print("This will open your browser for Google login.\n")
 
-        print("\n" + "=" * 50)
-        print("  GOOGLE LOGIN")
-        print("=" * 50)
-
-        # Build auth URL
-        state = secrets.token_urlsafe(16)
-        auth_url = f"{GOOGLE_AUTH_URL}?" + urlencode({
-            "client_id": self.config["client_id"],
-            "redirect_uri": OAUTH_REDIRECT_URI,
-            "response_type": "code",
-            "scope": " ".join(SCOPES),
-            "state": state,
-            "access_type": "offline",
-            "prompt": "consent",
-        })
-
-        # Reset callback state
-        OAuthCallback.auth_code = None
-        OAuthCallback.error = None
-
-        # Start callback server
-        server = HTTPServer(("localhost", OAUTH_CALLBACK_PORT), OAuthCallback)
-        server.timeout = 300
-
-        print("\n📱 Opening browser for Google login...")
-        webbrowser.open(auth_url)
-        print("⏳ Waiting for login...\n")
-
-        # Wait for callback
-        while OAuthCallback.auth_code is None and OAuthCallback.error is None:
-            server.handle_request()
-        server.server_close()
-
-        if OAuthCallback.error:
-            print(f"❌ Login failed: {OAuthCallback.error}")
-            return False
-
-        # Exchange code for tokens
-        print("🔄 Getting tokens...")
         try:
-            import urllib.request
-            import urllib.parse
+            result = subprocess.run(
+                ["gcloud", "auth", "application-default", "login",
+                 "--scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/generative-language.retriever"],
+                check=True
+            )
+            if result.returncode == 0:
+                self._check_auth()
+                if self.auth_method == "adc":
+                    print("\n" + "=" * 60)
+                    print("  LOGIN SUCCESSFUL!")
+                    print("=" * 60 + "\n")
+                    return True
+        except FileNotFoundError:
+            print("\n" + "-" * 60)
+            print("  gcloud CLI not found!")
+            print("-" * 60)
+            print("\nInstall options:")
+            print("  brew install google-cloud-sdk")
+            print("  # or visit: https://cloud.google.com/sdk/docs/install")
+            print("\nAlternatively, set GOOGLE_API_KEY environment variable")
+            print("  Get key from: https://aistudio.google.com/apikey")
+        except subprocess.CalledProcessError as e:
+            print(f"\n  Login failed: {e}")
 
-            data = urllib.parse.urlencode({
-                "client_id": self.config["client_id"],
-                "client_secret": self.config["client_secret"],
-                "code": OAuthCallback.auth_code,
-                "grant_type": "authorization_code",
-                "redirect_uri": OAUTH_REDIRECT_URI,
-            }).encode()
-
-            req = urllib.request.Request(GOOGLE_TOKEN_URL, data=data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"})
-            resp = json.loads(urllib.request.urlopen(req, timeout=30).read())
-
-            # Get user info
-            info_req = urllib.request.Request(GOOGLE_USERINFO_URL,
-                headers={"Authorization": f"Bearer {resp['access_token']}"})
-            info = json.loads(urllib.request.urlopen(info_req, timeout=10).read())
-
-            self.tokens = {
-                "access_token": resp["access_token"],
-                "refresh_token": resp.get("refresh_token"),
-                "expires_at": (datetime.now() + timedelta(seconds=resp.get("expires_in", 3600))).isoformat(),
-                "email": info.get("email", "unknown"),
-                "name": info.get("name", ""),
-            }
-            self._save_tokens()
-
-            print(f"\n✅ Logged in as: {self.tokens['email']}")
-            print("=" * 50 + "\n")
-            return True
-
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            return False
-
-    async def refresh(self) -> bool:
-        """Refresh access token."""
-        if not self.tokens or not self.tokens.get("refresh_token"):
-            return False
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(GOOGLE_TOKEN_URL, data={
-                "client_id": self.config["client_id"],
-                "client_secret": self.config["client_secret"],
-                "refresh_token": self.tokens["refresh_token"],
-                "grant_type": "refresh_token",
-            })
-            if resp.status_code != 200:
-                return False
-
-            data = resp.json()
-            self.tokens["access_token"] = data["access_token"]
-            self.tokens["expires_at"] = (datetime.now() + timedelta(seconds=data.get("expires_in", 3600))).isoformat()
-            self._save_tokens()
-            return True
+        return False
 
     async def get_token(self) -> Optional[str]:
-        """Get valid access token."""
-        if not self.is_logged_in:
+        """Get valid access token from ADC."""
+        if self.auth_method == "api_key":
+            return None  # API key auth doesn't use bearer tokens
+
+        if self.auth_method != "adc":
             return None
-        if self.is_expired:
-            if not await self.refresh():
-                return None
-        return self.tokens.get("access_token")
+
+        # Check if we have a valid cached token
+        if self.access_token and self.token_expiry:
+            if datetime.now() < self.token_expiry:
+                return self.access_token
+
+        # Refresh token using ADC
+        try:
+            creds = json.loads(ADC_FILE.read_text())
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://oauth2.googleapis.com/token",
+                    data={
+                        "client_id": creds["client_id"],
+                        "client_secret": creds["client_secret"],
+                        "refresh_token": creds["refresh_token"],
+                        "grant_type": "refresh_token",
+                    }
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self.access_token = data["access_token"]
+                    self.token_expiry = datetime.now() + timedelta(seconds=data.get("expires_in", 3600) - 60)
+                    return self.access_token
+        except Exception as e:
+            logger.error(f"Token refresh failed: {e}")
+
+        return None
+
+    def get_email(self) -> str:
+        """Get logged in email from ADC."""
+        if self.auth_method == "api_key":
+            return "(API Key)"
+        try:
+            result = subprocess.run(
+                ["gcloud", "config", "get-value", "account"],
+                capture_output=True, text=True
+            )
+            return result.stdout.strip() or "unknown"
+        except:
+            return "unknown"
 
 
 # Global auth manager
@@ -416,31 +307,37 @@ async def stream_response(resp: httpx.Response, model: str) -> AsyncGenerator[st
 
 @app.on_event("startup")
 async def startup():
-    """Check auth on startup and prompt login if needed."""
+    """Check auth on startup and prompt for API key if needed."""
     print("\n" + "=" * 50)
     print("  GEMINI PROXY FOR CLAUDE CODE")
     print("=" * 50)
 
     if not auth.is_configured:
-        print("\n⚠️  Not configured. Starting setup...")
-        if not auth.setup():
-            print("\n❌ Setup required. Exiting.")
-            sys.exit(1)
+        print("\n⚠️  No API key found!")
+        print("\n" + "-" * 50)
+        print("  GET YOUR FREE API KEY:")
+        print("-" * 50)
+        print("\n  1. Go to: https://aistudio.google.com/apikey")
+        print("  2. Click 'Create API Key'")
+        print("  3. Copy the key")
+        print("\n  Then start proxy with:")
+        print("  GOOGLE_API_KEY=your-key start-gemini-proxy")
+        print("\n  Or add to ~/.zshrc:")
+        print("  export GOOGLE_API_KEY='your-key'")
+        print("-" * 50 + "\n")
 
-    if not auth.is_logged_in:
-        print("\n⚠️  Not logged in. Starting login...")
-        if not auth.login():
-            print("\n❌ Login required. Exiting.")
-            sys.exit(1)
-    elif auth.is_expired:
-        print("\n🔄 Token expired, refreshing...")
-        if not await auth.refresh():
-            print("⚠️  Refresh failed. Re-logging in...")
-            if not auth.login():
-                print("\n❌ Login required. Exiting.")
-                sys.exit(1)
+        # Try to open AI Studio
+        import webbrowser
+        print("Opening Google AI Studio...")
+        webbrowser.open("https://aistudio.google.com/apikey")
+        sys.exit(1)
 
-    print(f"\n✅ Ready! Logged in as: {auth.tokens.get('email', 'unknown')}")
+    print(f"\n✅ Ready!")
+    print(f"   Auth: {auth.auth_method.upper()}")
+    if auth.auth_method == "api_key":
+        print(f"   Key: {auth.api_key[:8]}...{auth.api_key[-4:]}")
+    else:
+        print(f"   Account: {auth.get_email()}")
     print("=" * 50 + "\n")
 
 
@@ -449,9 +346,9 @@ async def health():
     return {
         "status": "healthy",
         "service": "gemini-proxy",
+        "auth_method": auth.auth_method,
         "configured": auth.is_configured,
-        "authenticated": auth.is_logged_in,
-        "email": auth.tokens.get("email") if auth.tokens else None
+        "email": auth.get_email() if auth.is_configured else None
     }
 
 
@@ -463,8 +360,7 @@ async def models():
 @app.post("/v1/messages")
 async def messages(request: Request):
     """Main endpoint - translates Anthropic to Gemini."""
-    token = await auth.get_token()
-    if not token:
+    if not auth.is_configured:
         raise HTTPException(401, "Not authenticated. Restart proxy to login.")
 
     try:
@@ -479,22 +375,52 @@ async def messages(request: Request):
     gemini_req = to_gemini(body)
     stream = body.get("stream", False)
     action = "streamGenerateContent" if stream else "generateContent"
-    url = f"{GEMINI_API_BASE}/models/{gemini_model}:{action}"
-    if stream: url += "?alt=sse"
 
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # Build URL based on auth method
+    if auth.auth_method == "api_key":
+        url = f"{GEMINI_API_BASE}/models/{gemini_model}:{action}?key={auth.api_key}"
+        if stream:
+            url += "&alt=sse"
+        headers = {"Content-Type": "application/json"}
+    else:
+        token = await auth.get_token()
+        if not token:
+            raise HTTPException(401, "Token refresh failed. Run: gemini-login")
+        url = f"{GEMINI_API_BASE}/models/{gemini_model}:{action}"
+        if stream:
+            url += "?alt=sse"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=300) as client:
         if stream:
             async with client.stream("POST", url, json=gemini_req, headers=headers) as resp:
                 if resp.status_code != 200:
-                    raise HTTPException(resp.status_code, (await resp.aread()).decode())
+                    error_text = (await resp.aread()).decode()
+                    logger.error(f"Gemini error: {error_text}")
+                    raise HTTPException(resp.status_code, error_text)
                 return StreamingResponse(stream_response(resp, model), media_type="text/event-stream")
         else:
             resp = await client.post(url, json=gemini_req, headers=headers)
             if resp.status_code != 200:
+                logger.error(f"Gemini error: {resp.text}")
                 raise HTTPException(resp.status_code, resp.text)
             return JSONResponse(from_gemini(resp.json(), model))
+
+
+@app.post("/login")
+async def trigger_login():
+    """Trigger login flow."""
+    if auth.login():
+        return {"status": "ok", "email": auth.get_email()}
+    raise HTTPException(401, "Login failed")
+
+
+@app.post("/logout")
+async def logout():
+    """Clear cached tokens (ADC file remains)."""
+    auth.access_token = None
+    auth.token_expiry = None
+    return {"status": "logged out"}
 
 
 if __name__ == "__main__":
@@ -504,16 +430,16 @@ if __name__ == "__main__":
         cmd = sys.argv[1]
         if cmd == "--login":
             auth.login()
-        elif cmd == "--setup":
-            auth.setup()
         elif cmd == "--status":
-            print(f"\nConfigured: {'✅' if auth.is_configured else '❌'}")
-            print(f"Logged in:  {'✅' if auth.is_logged_in else '❌'}")
-            if auth.tokens:
-                print(f"Email: {auth.tokens.get('email')}")
-                print(f"Expires: {auth.tokens.get('expires_at')}")
+            print("\n" + "=" * 40)
+            print("  GEMINI PROXY STATUS")
+            print("=" * 40)
+            print(f"  Configured: {'Yes' if auth.is_configured else 'No'}")
+            print(f"  Auth method: {auth.auth_method or 'None'}")
+            print(f"  Account: {auth.get_email()}")
+            print("=" * 40 + "\n")
         else:
-            print("Commands: --login, --setup, --status")
+            print("Commands: --login, --status")
     else:
         # Start server - will auto-prompt for login if needed
         uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8081)))
